@@ -57,6 +57,7 @@ public:
     void setCellLogicalWidths();
     int calcRowLogicalHeight();
     int layoutRows(int logicalHeight);
+    void layoutPaginatedRows();
 
     RenderTable* table() const { return toRenderTable(parent()); }
 

@@ -400,6 +400,8 @@ void RenderTable::layout()
         setLogicalHeight(logicalHeight() + computedLogicalHeight);
     }
 
+    LayoutUnit oldLogicalHeight = logicalHeight();
+
     LayoutUnit sectionLogicalLeft = style()->isLeftToRightDirection() ? borderStart() : borderEnd();
     if (!collapsing)
         sectionLogicalLeft += style()->isLeftToRightDirection() ? paddingStart() : paddingEnd();
@@ -416,6 +418,19 @@ void RenderTable::layout()
         setLogicalHeight(logicalHeight() + section->logicalHeight());
         section = sectionBelow(section);
     }
+
+    /* Begin Patched by Henry Castro <hcvcastro@gmail.com>  */
+    if (view()->layoutState()->pageLogicalHeight()) {
+      setLogicalHeight(oldLogicalHeight);
+      section = topSection();
+      while (section) {
+	section->layoutPaginatedRows();
+        section->setLogicalTop(logicalHeight());
+	setLogicalHeight(logicalHeight() + section->logicalHeight());
+	section = sectionBelow(section);
+      }
+    }
+    /* End Patched by Henry Casro <hcvcastro@gmail.com>   */
 
     setLogicalHeight(logicalHeight() + borderAndPaddingAfter);
 

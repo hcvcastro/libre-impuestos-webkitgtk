@@ -423,9 +423,17 @@ int RenderTableSection::calcRowLogicalHeight()
 
 void RenderTableSection::layout()
 {
+  LayoutUnit pageHeight = 0;
+  LayoutUnit pageHeightChanged = false;
     ASSERT(needsLayout());
 
-    LayoutStateMaintainer statePusher(view(), this, locationOffset(), style()->isFlippedBlocksWritingMode());
+    if (document()->printing()) {
+      // We disable page height to get correct cell heights
+      pageHeight = INT_MAX;
+      pageHeightChanged = true;
+    }
+
+    LayoutStateMaintainer statePusher(view(), this, locationOffset(), style()->isFlippedBlocksWritingMode(), pageHeight, pageHeightChanged);
     for (RenderObject* child = children()->firstChild(); child; child = child->nextSibling()) {
         if (child->isTableRow()) {
             child->layoutIfNeeded();
@@ -518,18 +526,26 @@ int RenderTableSection::layoutRows(int toAdd)
     int vspacing = table()->vBorderSpacing();
     unsigned nEffCols = table()->numEffCols();
 
-    LayoutStateMaintainer statePusher(view(), this, LayoutSize(x(), y()), style()->isFlippedBlocksWritingMode());
+  LayoutUnit pageHeight = 0;
+  LayoutUnit pageHeightChanged = false;
+
+
+  if (document()->printing()) {
+    // We disable page height to get correct cell heights
+    pageHeight = INT_MAX;
+    pageHeightChanged = true;
+  }
+
+  LayoutStateMaintainer statePusher(view(), this, LayoutSize(x(), y()), style()->isFlippedBlocksWritingMode(), pageHeight, pageHeightChanged);
 
     for (unsigned r = 0; r < totalRows; r++) {
         // Set the row's x/y position and width/height.
         if (RenderTableRow* rowRenderer = m_grid[r].rowRenderer) {
-            rowRenderer->setLocation(LayoutPoint(0, m_rowPos[r]));
+	     rowRenderer->setLocation(LayoutPoint(0, m_rowPos[r]));
             rowRenderer->setLogicalWidth(logicalWidth());
             rowRenderer->setLogicalHeight(m_rowPos[r + 1] - m_rowPos[r] - vspacing);
             rowRenderer->updateLayerTransform();
         }
-
-        int rowHeightIncreaseForPagination = 0;
 
         for (unsigned c = 0; c < nEffCols; c++) {
             CellStruct& cs = cellAt(r, c);
@@ -657,8 +673,6 @@ int RenderTableSection::layoutRows(int toAdd)
 
             // FIXME: Make pagination work with vertical tables.
             if (style()->isHorizontalWritingMode() && view()->layoutState()->pageLogicalHeight() && cell->height() != rHeight) {
-                if (cell->logicalHeight() > rHeight)
-                    rowHeightIncreaseForPagination = max<int>(rowHeightIncreaseForPagination, cell->logicalHeight() - rHeight);
                 cell->setLogicalHeight(rHeight);
 	    }
 
@@ -673,17 +687,6 @@ int RenderTableSection::layoutRows(int toAdd)
                     cell->repaintDuringLayoutIfMoved(oldCellRect);
             }
         }
-
-        if (rowHeightIncreaseForPagination) {
-            for (unsigned rowIndex = r + 1; rowIndex <= totalRows; rowIndex++)
-                m_rowPos[rowIndex] += rowHeightIncreaseForPagination;
-            for (unsigned c = 0; c < nEffCols; ++c) {
-                Vector<RenderTableCell*, 1>& cells = cellAt(r, c).cells;
-                for (size_t i = 0; i < cells.size(); ++i)
-                    cells[i]->setLogicalHeight(cells[i]->logicalHeight() + rowHeightIncreaseForPagination);
-            }
-        }
-
     }
 
 #ifndef NDEBUG
@@ -729,6 +732,66 @@ int RenderTableSection::layoutRows(int toAdd)
 
     statePusher.pop();
     return height();
+}
+
+void RenderTableSection::layoutPaginatedRows()
+{
+  //LayoutUnit logicalTopBox = logicalTop();
+  //LayoutUnit logicalOffset = 0;
+  LayoutUnit pageStruct = 0;
+  RenderTable* table = this->table();
+  //LayoutUnit pageLogicalHeight = table->pageLogicalHeightForOffset(logicalOffset);  
+  LayoutUnit pageRemaining;
+  LayoutUnit pageTopRemaining;
+  LayoutUnit pageBotRemaining;
+  LayoutUnit rowHeight;
+  unsigned totalRows = m_grid.size();
+  unsigned nEffCols = table->numEffCols();
+  //int vspacing = table->vBorderSpacing();
+
+  LayoutStateMaintainer statePusher(view(), this, locationOffset(), style()->isFlippedBlocksWritingMode());
+
+  /* Check first case before priting first row*/
+  pageStruct = 0;  // assume 0 offset
+  rowHeight = 0;
+
+  for (unsigned row = 0; row < totalRows; row++) {
+    pageRemaining = 0;
+    pageTopRemaining = table->pageRemainingLogicalHeightForOffset(m_rowPos[row] + pageStruct);
+    pageBotRemaining = table->pageRemainingLogicalHeightForOffset(m_rowPos[row + 1] + pageStruct);
+
+    if (RenderTableRow* rowRenderer = m_grid[row].rowRenderer) {
+      rowHeight = m_rowPos[row + 1] - m_rowPos[row];// - vspacing;
+
+      if ( pageTopRemaining > pageBotRemaining ) {
+	if ( rowHeight > pageBotRemaining )
+	  pageRemaining = pageBotRemaining;
+	  ;//rowRenderer->setLogicalHeight(pageRemaining + rowHeight);
+      } else {
+	pageStruct += pageTopRemaining;
+	pageRemaining = 0;
+      }
+
+      rowRenderer->setLogicalTop(m_rowPos[row] + pageStruct);	    
+      rowRenderer->updateLayerTransform();
+    }
+
+    for (unsigned col = 0; col < nEffCols; col++) {
+      CellStruct& cs = cellAt(row, col);
+      RenderTableCell* cell = cs.primaryCell();
+
+      if (!cell || cs.inColSpan)
+	continue;
+
+      cell->setLogicalTop(m_rowPos[row] + pageStruct);
+
+    }
+    pageStruct += pageRemaining;
+  }
+  
+  statePusher.pop();
+  setLogicalHeight(m_rowPos[totalRows] + pageStruct );
+
 }
 
 int RenderTableSection::calcOuterBorderBefore() const
@@ -1051,6 +1114,10 @@ void RenderTableSection::paintObject(PaintInfo& paintInfo, const LayoutPoint& pa
         // binary search to find a row
         startrow = std::lower_bound(m_rowPos.begin(), m_rowPos.end(), before) - m_rowPos.begin();
 
+	// FIXME,  pagination
+	if (document()->printing())
+	  startrow = 0;
+
         // The binary search above gives us the first row with
         // a y position >= the top of the paint rect. Thus, the previous
         // may need to be repainted as well.
@@ -1059,6 +1126,11 @@ void RenderTableSection::paintObject(PaintInfo& paintInfo, const LayoutPoint& pa
 
         LayoutUnit after = (style()->isHorizontalWritingMode() ? localRepaintRect.maxY() : localRepaintRect.maxX()) + os;
         endrow = std::lower_bound(m_rowPos.begin(), m_rowPos.end(), after) - m_rowPos.begin();
+
+	// FIXME, pagination
+	if (document()->printing())
+	  endrow = m_rowPos.size();
+
         if (endrow == m_rowPos.size())
           --endrow;
 

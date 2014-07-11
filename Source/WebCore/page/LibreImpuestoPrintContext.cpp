@@ -28,6 +28,16 @@
 #include "FrameView.h"
 #include "RenderLayer.h"
 #include "RenderView.h"
+#include "HTMLElement.h"
+#include "HTMLNames.h"
+#include "HTMLTableCaptionElement.h"
+#include "HTMLTableCellElement.h"
+#include "HTMLTableElement.h"
+#include "HTMLTableRowElement.h"
+#include "RenderObject.h"
+#include "RenderTableCell.h"
+#include "RenderTableRow.h"
+#include "NodeList.h"
 #include <wtf/text/WTFString.h>
 #include "PlatformContextCairo.h"
 
@@ -61,7 +71,7 @@ LibreImpuestoPrintContext::~LibreImpuestoPrintContext()
 // Called after begin
 void LibreImpuestoPrintContext::computePageRects(const FloatRect& printRect, float headerHeight, float footerHeight, float userScaleFactor, float& outPageHeight, bool allowHorizontalTiling)
 {
-  RenderView* view;
+    RenderView* view;
 
     m_pageContentRects.clear();
     m_pageHeaderRects.clear();
@@ -75,24 +85,18 @@ void LibreImpuestoPrintContext::computePageRects(const FloatRect& printRect, flo
         return;
     }
 
-    view = toRenderView(m_headerFrame->document()->renderer());
-    const IntRect& headerRect = view->documentRect();
-
-    view = toRenderView(m_footerFrame->document()->renderer());
-    const IntRect& footerRect = view->documentRect();
-
     view = toRenderView(m_contentFrame->document()->renderer());
     const IntRect& documentRect = view->documentRect();
     FloatSize pageSize = m_contentFrame->resizePageRectsKeepingRatio(FloatSize(printRect.width(), printRect.height()), FloatSize(documentRect.width(), documentRect.height()));
+
+    pageSize.setHeight( pageSize.height() - headerHeight - footerHeight );
+
     float pageWidth = pageSize.width();
     float pageHeight = pageSize.height();
 
     outPageHeight = pageHeight; // this is the height of the page adjusted by margins
 
     computeHeaderPageRectsWithPageSizeInternal(FloatSize(pageWidth / userScaleFactor, pageHeight / userScaleFactor), allowHorizontalTiling);
-
-    //pageHeight -= headerHeight + footerHeight;
-    pageHeight -= headerRect.height() + footerRect.height();
 
     if (pageHeight <= 0) {
         LOG_ERROR("pageHeight has bad value %.2f", pageHeight);
@@ -250,27 +254,171 @@ void LibreImpuestoPrintContext::computePageRectsWithPageSizeInternal(const Float
     }
 }
 
+bool LibreImpuestoPrintContext::insertHeader( RefPtr<HTMLTableRowElement>& head, RefPtr<Node>& tableBody, unsigned pageHeight)
+{
+  bool result = false;
+  LayoutPoint coord;
+  RefPtr<Node> row;
+  ExceptionCode ec = 0;
+  RenderObject* renderer;
+  RenderTableRow* renderTableRow;
+  PassRefPtr<NodeList> listRow =  tableBody->childNodes();	  
+
+  for(unsigned iterRow=0; iterRow < listRow->length(); iterRow++) {
+    row = listRow->item(iterRow);
+    renderer = row->renderer();
+    if ( renderer && renderer->isTableRow() ) {
+      renderTableRow = toRenderTableRow(renderer);
+      coord = roundedLayoutPoint(renderTableRow->localToAbsolute());
+      if ( (coord.y() % pageHeight) == 0 && 
+	   !row->isEqualNode(head->toNode()) ) {
+	tableBody->insertBefore(head->cloneElementWithChildren(), row.get(), ec);
+	result = true;
+	break;
+      }
+    }
+  }
+  return result;
+}
+
+void LibreImpuestoPrintContext::fillRows( float width, float height, float headerHeight, float footerHeight )
+{
+    RenderView* view;
+    view = toRenderView(m_contentFrame->document()->renderer());
+    const IntRect& documentRect = view->documentRect();
+
+    FloatSize originalPageSize = FloatSize(width, height);
+    FloatSize minLayoutSize = m_contentFrame->resizePageRectsKeepingRatio(originalPageSize, 
+									  FloatSize(documentRect.width(), documentRect.height()));
+
+    minLayoutSize.setHeight( minLayoutSize.height() - headerHeight - footerHeight);
+
+    Document* document = m_contentFrame->document();
+    HTMLElement* body = document->body();
+    RefPtr<HTMLTableRowElement> head;
+    RefPtr<Node> tableHead;
+    RefPtr<Node> tableBody;
+    RefPtr<Node> table;    
+
+    // Iterate all tables
+    PassRefPtr<NodeList> listTable = body->getElementsByTagName("table");
+    unsigned pageHeight = toRenderView(document->renderer())->pageLogicalHeight();
+    for (unsigned iterTable=0; iterTable < listTable->length(); iterTable++) {
+      table = listTable->item(iterTable);
+
+      // iterate all head sections
+      PassRefPtr<NodeList> listHead = table->getElementsByTagName("thead");
+      for(unsigned iterHead=0; iterHead < listHead->length(); iterHead++ ) {
+	tableHead = listHead->item(iterHead);
+
+	// iterate all rows
+	PassRefPtr<NodeList> listRow = tableHead->childNodes();
+	for(unsigned iterRow=0; iterRow < listRow->length(); iterRow++ ) {
+	  if (listRow->item(iterRow)->hasTagName(HTMLNames::trTag)) {
+	    head = static_cast<HTMLTableRowElement*>(listRow->item(iterRow));
+	    break;
+	  }
+	}
+      }
+
+      // if no header found .. continue.
+      if ( !head ) continue;
+
+      // iterate all body section
+      PassRefPtr<NodeList> listBody = table->getElementsByTagName("tbody");
+      for(unsigned iterBody=0; iterBody < listBody->length(); iterBody++) {
+	tableBody = listBody->item(iterBody);
+
+	while ( insertHeader( head, tableBody, pageHeight ))
+	  m_contentFrame->setPrinting(true, minLayoutSize, originalPageSize, printingMaximumShrinkFactor / printingMinimumShrinkFactor, AdjustViewSize);
+      }
+
+      head = 0;
+    }
+}
+
+void LibreImpuestoPrintContext::computeHeaderFooterHeight( float pageHeight,  float &headerHeight, float &footerHeight )
+{
+  RenderView* view;
+
+  view = toRenderView(m_headerFrame->document()->renderer());
+  const IntRect& headerRect = view->documentRect();
+  headerHeight = headerRect.height();
+
+  if (headerHeight >= pageHeight )
+    headerHeight = 0;
+
+  m_headerHeight = headerHeight;
+
+  view = toRenderView(m_footerFrame->document()->renderer());
+  const IntRect& footerRect = view->documentRect();
+  footerHeight = footerRect.height();
+
+  if (footerHeight >= pageHeight )
+    footerHeight = 0;
+
+  m_footerHeight = footerHeight;
+}
+
+
 void LibreImpuestoPrintContext::begin(float width, float height)
 {
     // This function can be called multiple times to adjust printing parameters without going back to screen mode.
     m_isPrinting = true;
 
     FloatSize originalPageSize = FloatSize(width, height);
-    FloatSize minLayoutSize = m_contentFrame->resizePageRectsKeepingRatio(originalPageSize, FloatSize(width * printingMinimumShrinkFactor, height * printingMinimumShrinkFactor));
+    FloatSize minLayoutSize = m_contentFrame->resizePageRectsKeepingRatio(originalPageSize, 
+									  FloatSize(width * printingMinimumShrinkFactor, height * printingMinimumShrinkFactor));
 
     // This changes layout, so callers need to make sure that they don't paint to screen while in printing mode.
     m_contentFrame->setPrinting(true, minLayoutSize, originalPageSize, printingMaximumShrinkFactor / printingMinimumShrinkFactor, AdjustViewSize);
 
     // Header
-    minLayoutSize = m_headerFrame->resizePageRectsKeepingRatio(originalPageSize, FloatSize(width * printingMinimumShrinkFactor, height * printingMinimumShrinkFactor));
+    minLayoutSize = m_headerFrame->resizePageRectsKeepingRatio(originalPageSize, 
+							       FloatSize(width * printingMinimumShrinkFactor, height * printingMinimumShrinkFactor));
     m_headerFrame->setPrinting(true, minLayoutSize, originalPageSize, printingMaximumShrinkFactor / printingMinimumShrinkFactor, AdjustViewSize);
 
     // Footer
-    minLayoutSize = m_footerFrame->resizePageRectsKeepingRatio(originalPageSize, FloatSize(width * printingMinimumShrinkFactor, height * printingMinimumShrinkFactor));
+    minLayoutSize = m_footerFrame->resizePageRectsKeepingRatio(originalPageSize, 
+							       FloatSize(width * printingMinimumShrinkFactor, height * printingMinimumShrinkFactor));
     m_footerFrame->setPrinting(true, minLayoutSize, originalPageSize, printingMaximumShrinkFactor / printingMinimumShrinkFactor, AdjustViewSize);
 
 
 }
+
+void LibreImpuestoPrintContext::beginPage(float width, float height, float headerHeight, float footerHeight)
+{
+    RenderView* view;
+
+    // This function can be called multiple times to adjust printing parameters without going back to screen mode.
+    m_isPrinting = true;
+
+    view = toRenderView(m_contentFrame->document()->renderer());
+    const IntRect& documentRect = view->documentRect();
+
+    FloatSize originalPageSize = FloatSize(width, height);
+    FloatSize minLayoutSize = m_contentFrame->resizePageRectsKeepingRatio(originalPageSize, 
+									  FloatSize(documentRect.width(), documentRect.height()));
+
+    minLayoutSize.setHeight( minLayoutSize.height() - headerHeight - footerHeight);
+
+    // This changes layout, so callers need to make sure that they don't paint to screen while in printing mode.
+    m_contentFrame->setPrinting(true, minLayoutSize, originalPageSize, printingMaximumShrinkFactor / printingMinimumShrinkFactor, AdjustViewSize);
+
+    // Header
+    minLayoutSize = m_headerFrame->resizePageRectsKeepingRatio(originalPageSize, 
+							       FloatSize(documentRect.width(), documentRect.height()));
+    m_headerFrame->setPrinting(true, minLayoutSize, originalPageSize, printingMaximumShrinkFactor / printingMinimumShrinkFactor, AdjustViewSize);
+
+    // Footer
+    minLayoutSize = m_footerFrame->resizePageRectsKeepingRatio(originalPageSize, 
+							       FloatSize(documentRect.width(), documentRect.height()));
+    m_footerFrame->setPrinting(true, minLayoutSize, originalPageSize, printingMaximumShrinkFactor / printingMinimumShrinkFactor, AdjustViewSize);
+
+
+}
+
+
 
 float LibreImpuestoPrintContext::computeAutomaticScaleFactor(const FloatSize& availablePaperSize)
 {
@@ -293,21 +441,12 @@ float LibreImpuestoPrintContext::computeAutomaticScaleFactor(const FloatSize& av
 void LibreImpuestoPrintContext::spoolPage(GraphicsContext& ctx, int pageNumber, float width)
 {
     // FIXME: Not correct for vertical text.
-  IntRect pageHeaderRect = m_pageHeaderRects[0];
   IntRect pageContentRect = m_pageContentRects[pageNumber];
   float scale = width / pageContentRect.width();
 
-  //double x = 0 ,y = 0;
-  
-  const IntRect& headerRect = toRenderView(m_headerFrame->document()->renderer())->documentRect();
+  const IntRect& headerRect = IntRect(0, 0, pageContentRect.width(), m_headerHeight);
+  const IntRect& footerRect = IntRect(0, 0, pageContentRect.width(), m_footerHeight);
 
-  const IntRect& footerRect = toRenderView(m_footerFrame->document()->renderer())->documentRect();
-
-  /*PlatformGraphicsContext * pg = ctx.platformContext();
-
-  cairo_t* cr = pg->cr();
-    cairo_user_to_device(cr, &x, &y);*/
-  
   ctx.save();
   ctx.scale(FloatSize(scale, scale));
   ctx.translate(-pageContentRect.x(), -pageContentRect.y() + headerRect.height());

@@ -25,6 +25,7 @@
 
 #include <wtf/Forward.h>
 #include <wtf/Vector.h>
+#include "HTMLTableRowElement.h"
 
 namespace WebCore {
 
@@ -63,6 +64,7 @@ public:
     // Enter print mode, updating layout for new page size.
     // This function can be called multiple times to apply new print options without going back to screen mode.
     void begin(float width, float height = 0);
+    void beginPage(float width, float height = 0, float headerHeight = 0, float footerHeight = 0);
 
     // FIXME: eliminate width argument.
     void spoolPage(GraphicsContext& ctx, int pageNumber, float width);
@@ -82,6 +84,8 @@ public:
     // The height of the graphics context should be
     // (pageSizeInPixels.height() + 1) * number-of-pages - 1
     static void spoolAllPagesWithBoundaries(Frame*, GraphicsContext&, const FloatSize& pageSizeInPixels);
+    void computeHeaderFooterHeight(float pageHeight,  float& headerHeight, float& footerHeight );
+    void fillRows(float width, float height, float headerHeight, float footerHeight);
 
 protected:
     Frame* m_contentFrame;
@@ -89,11 +93,13 @@ protected:
     Frame* m_footerFrame;
     Vector<IntRect> m_pageContentRects;
     Vector<IntRect> m_pageHeaderRects;
+    LayoutUnit m_headerHeight;
+    LayoutUnit m_footerHeight;
 
 private:
     void computePageRectsWithPageSizeInternal(const FloatSize& pageSizeInPixels, bool allowHorizontalTiling);
     void computeHeaderPageRectsWithPageSizeInternal(const FloatSize& pageSizeInPixels, bool allowHorizontalTiling);
-
+    bool insertHeader( RefPtr<HTMLTableRowElement>&, RefPtr<Node>&, unsigned);
 
     // Used to prevent misuses of begin() and end() (e.g., call end without begin).
     bool m_isPrinting;
